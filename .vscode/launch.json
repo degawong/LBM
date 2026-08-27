@@ -1,0 +1,30 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python 调试程序: 当前文件",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "args": [
+                "--path_config=/home/datas/nas-hz1/LBM/examples/training/config/test.yaml",
+            ],
+            "env": {
+                // "SLURM_JOB_ID": "0",
+                // "SLURM_PROCID": "0",
+                // "SLURM_ARRAY_TASK_ID": "0",
+                // "SLURM_NPROCS": "1",
+                // "SLURM_NNODES": "1",
+                "WANDB_DIR": "/tmp/wandb/lbm_test",
+                "WANDB_START_METHOD": "thread",
+                "CUDA_VISIBLE_DEVICES": "0",
+                "PYTHONNOUSERSITE": "1",
+            },
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}

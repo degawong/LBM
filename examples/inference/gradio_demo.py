@@ -1,6 +1,17 @@
 import glob
 import logging
 import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "2,3,4,5"
+os.environ["HF_DEBUG"] = "1"
+
+
+os.environ["HF_HUB_OFFLINE"]="1"
+os.environ["HF_TOKEN"] = os.environ.get("HF_TOKEN", "")
+# os.environ["HF_ENDPOINT"] = "https://huggingface.co"
+os.environ["HF_ENDPOINT"] = "https://huggingface.co"
+# os.environ["HF_HOME"] = "/media/83nvme/wgq2719/dega/huggingface/"
+
 from copy import deepcopy
 
 import gradio as gr
@@ -19,22 +30,29 @@ PATH = os.path.dirname(os.path.abspath(__file__))
 os.environ["GRADIO_TEMP_DIR"] = ".gradio"
 
 
-if not os.path.exists(os.path.join(PATH, "ckpts", "relighting")):
-    logging.info(f"Downloading relighting LBM model from HF hub...")
-    model = get_model(
-        f"jasperai/LBM_relighting",
-        save_dir=os.path.join(PATH, "ckpts", "relighting"),
-        torch_dtype=torch.bfloat16,
-        device="cuda",
-    )
-else:
-    model_dir = os.path.join(PATH, "ckpts", "relighting")
-    logging.info(f"Loading relighting LBM model from local...")
-    model = get_model(
-        os.path.join(PATH, "ckpts", "relighting"),
-        torch_dtype=torch.bfloat16,
-        device="cuda",
-    )
+# if not os.path.exists(os.path.join(PATH, "ckpts", "relighting")):
+#     logging.info(f"Downloading relighting LBM model from HF hub...")
+#     model = get_model(
+#         f"jasperai/LBM_relighting",
+#         # save_dir=os.path.join(PATH, "ckpts", "relighting"),
+#         torch_dtype=torch.bfloat16,
+#         device="cuda",
+#     )
+# else:
+#     model_dir = os.path.join(PATH, "ckpts", "relighting")
+#     logging.info(f"Loading relighting LBM model from local...")
+#     model = get_model(
+#         # os.path.join(PATH, "ckpts", "relighting"),
+#         torch_dtype=torch.bfloat16,
+#         device="cuda",
+#     )
+
+model = get_model(
+    f"jasperai/LBM_relighting",
+    # save_dir=os.path.join(PATH, "ckpts", "relighting"),
+    torch_dtype=torch.bfloat16,
+    device="cuda",
+)
 
 ASPECT_RATIOS = {
     str(512 / 2048): (512, 2048),

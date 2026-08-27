@@ -1,0 +1,6 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "python.defaultInterpreterPath": "/root/micromamba/envs/lbm/bin/python",
+    "python.terminal.activateEnvironment": false,
+    "python.analysis.autoImportCompletions": true
+}

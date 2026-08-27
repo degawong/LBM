@@ -1,5 +1,5 @@
 # wandb
-wandb_project: lbm-relight
+wandb_project: lbm-aiflash
 timestep_sampling: custom_timesteps
 unet_input_channels: 4
 vae_num_channels: 4
@@ -20,7 +20,7 @@ train_shards:
 validation_shards:
   - /media/181hdd/wgq2719/dataset/aisegment/variants/dataset_no_shadow_100_for_val.tar
 
-batch_size: 4
+batch_size: 2
 learning_rate: 4e-5
 optimizer: AdamW
 num_steps: [1, 4]
@@ -28,4 +28,4 @@ log_interval: 500
 resume_from_checkpoint: false
 max_epochs: 50
 save_interval: 5000
-save_ckpt_path: ./checkpoints
+save_ckpt_path: ./checkpoints-aiflash

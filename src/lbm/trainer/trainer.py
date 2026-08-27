@@ -162,7 +162,8 @@ class TrainingPipeline(pl.LightningModule):
     def training_step(self, train_batch: Dict[str, Any], batch_idx: int) -> dict:
         model_output = self.model(train_batch)
         loss = model_output["loss"]
-        logging.info(f"loss: {loss}")
+        if self.trainer.is_global_zero:
+            logging.info(f"loss: {loss}")
         return {
             "loss": loss,
             "batch_idx": batch_idx,

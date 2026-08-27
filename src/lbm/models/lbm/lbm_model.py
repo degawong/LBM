@@ -13,6 +13,7 @@ from ..unets import DiffusersUNet2DCondWrapper, DiffusersUNet2DWrapper
 from ..vae import AutoencoderKLDiffusers
 from .lbm_config import LBMConfig
 
+from diffusers.models import UNet2DConditionModel
 
 class LBMModel(BaseModel):
     """This is the LBM class which defines the model.
@@ -46,6 +47,7 @@ class LBMModel(BaseModel):
         self,
         config: LBMConfig,
         denoiser: Union[
+            UNet2DConditionModel,
             DiffusersUNet2DWrapper,
             DiffusersUNet2DCondWrapper,
         ] = None,
@@ -75,6 +77,13 @@ class LBMModel(BaseModel):
         self.target_key = config.target_key
         self.mask_key = config.mask_key
         self.bridge_noise_sigma = config.bridge_noise_sigma
+
+        self.prompt_path ='prompt_cache/6ab02325b7fc8d17.pt'
+        self.prompt_embedding = torch.load(
+            self.prompt_path,
+            map_location="cpu",
+            weights_only=True,
+        )
 
         self.num_iterations = nn.Parameter(
             torch.tensor(0, dtype=torch.float32), requires_grad=False
@@ -156,14 +165,40 @@ class LBMModel(BaseModel):
             if t.item() == self.training_noise_scheduler.timesteps[0]:
                 noisy_sample[i] = z_source[i]
 
+        # context_len = 77
+        # text_dim = 768
+        # encoder_hidden_states = torch.randn(
+        #     (z_source.shape[0], context_len, text_dim), 
+        #     dtype=torch.bfloat16, 
+        #     device=self.denoiser.device
+        # )
+
+        # saved_embedding = torch.load(
+        #     self.prompt_path,
+        #     map_location="cpu",
+        #     weights_only=True,
+        # )
+
+        saved_embedding = self.prompt_embedding.to(
+            device=z_source.device,
+            dtype=z_source.dtype,
+        )
+
+        encoder_hidden_states = saved_embedding.expand(
+            z_source.shape[0],
+            -1,
+            -1,
+        )
+
         # Predict noise level using denoiser
         prediction = self.denoiser(
             sample=noisy_sample,
             timestep=timestep,
-            conditioning=conditioning,
+            encoder_hidden_states=encoder_hidden_states,
+            # conditioning=conditioning,
             *args,
             **kwargs,
-        )
+        ).sample
 
         target = z_source - z
         denoised_sample = noisy_sample - prediction * sigmas
@@ -421,12 +456,33 @@ class LBMModel(BaseModel):
             else:
                 denoiser_input = sample
 
+            # context_len = 77
+            # text_dim = 768
+            # encoder_hidden_states = torch.randn(
+            #     (denoiser_input.shape[0], context_len, text_dim), 
+            #     dtype=torch.bfloat16, 
+            #     device=self.denoiser.device
+            # )
+
+            saved_embedding = self.prompt_embedding.to(
+                device=self.denoiser.device,
+                dtype=denoiser_input.dtype,
+            )
+
+            encoder_hidden_states = saved_embedding.expand(
+                denoiser_input.shape[0],
+                -1,
+                -1,
+            )
+
             # Predict noise level using denoiser using conditionings
             pred = self.denoiser(
                 sample=denoiser_input,
                 timestep=t.to(z.device).repeat(denoiser_input.shape[0]),
-                conditioning=conditioning,
-            )
+
+                encoder_hidden_states=encoder_hidden_states,
+                # conditioning=conditioning,
+            ).sample
 
             # Make one step on the reverse diffusion process
             sample = self.sampling_noise_scheduler.step(

@@ -8,3 +8,9 @@ examples/inference/examples/*
 envs/*
 checkpoints/*
 *.sh
+logs/
+coco_annotations/
+dataset/
+checkpoints-aiflash/
+wandb/
+.env
