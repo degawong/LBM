@@ -2,13 +2,23 @@
 
 This wrapper keeps the dataset keys used by the original experiment unchanged
 (image/normal/mask), while making the prompt path, loss diagnostics and WandB
-sampling policy explicit.  It delegates model/data construction to aiflash.py
-so that the existing training implementation remains reusable.
+sampling policy explicit. It can be launched directly from the repository root
+or by an absolute path; in both cases the repository root is added to
+``sys.path`` before importing the sibling training module.
 """
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict
+
+# When Python executes this file directly, sys.path[0] is
+# ``examples/training`` rather than the repository root. Therefore
+# ``from examples.training import aiflash`` otherwise fails with
+# ModuleNotFoundError: No module named 'examples'.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import torch
 import yaml
@@ -99,7 +109,7 @@ def main_from_config(path_config: str):
     if prompt_path:
         os.environ["LBM_PROMPT_EMBEDDING_PATH"] = str(Path(prompt_path).expanduser())
 
-    # Keep all original dataset keys untouched.  The stable model receives the
+    # Keep all original dataset keys untouched. The stable model receives the
     # prompt path through the environment because the legacy main signature does
     # not yet expose this argument.
     _base.LBMModel = ConfiguredLBMModel
@@ -107,18 +117,12 @@ def main_from_config(path_config: str):
     _base.TrainingPipeline.training_step = _training_step
     _base.TrainingPipeline.validation_step = _validation_step
 
-    # Inject the configured prompt into the model constructor used by aiflash.
-    original_get_model = _base.get_model
-
-    def get_model_with_prompt(*args, **kwargs):
-        model = original_get_model(*args, **kwargs)
-        # ConfiguredLBMModel reads and validates LBM_PROMPT_EMBEDDING_PATH after
-        # legacy construction; no dataset key is changed here.
-        return model
-
-    _base.get_model = get_model_with_prompt
     logging.info("Running stable AIFLASH config:\n%s", yaml.dump(config, sort_keys=False))
-    _base.main(**config, config_yaml={**config, "prompt_embedding_path": prompt_path}, path_config=path_config)
+    _base.main(
+        **config,
+        config_yaml={**config, "prompt_embedding_path": prompt_path},
+        path_config=path_config,
+    )
 
 
 if __name__ == "__main__":
