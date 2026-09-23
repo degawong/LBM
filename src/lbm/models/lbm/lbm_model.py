@@ -1,576 +1,105 @@
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import List, Literal, Optional, Tuple
 
-import lpips
-import numpy as np
-import torch
-import torch.nn as nn
-from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
-from tqdm import tqdm
+from pydantic.dataclasses import dataclass
 
-from ..base.base_model import BaseModel
-from ..embedders import ConditionerWrapper
-from ..unets import DiffusersUNet2DCondWrapper, DiffusersUNet2DWrapper
-from ..vae import AutoencoderKLDiffusers
-from .lbm_config import LBMConfig
+from ..base import ModelConfig
 
-from diffusers.models import UNet2DConditionModel
 
-class LBMModel(BaseModel):
-    """This is the LBM class which defines the model.
+@dataclass
+class LBMConfig(ModelConfig):
+    """This is the Config for LBM Model class which defines all the useful parameters to be used in the model.
 
     Args:
 
-        config (LBMConfig):
-            Configuration for the model
+        source_key (str):
+            Key for the source image. Defaults to "source_image"
 
-        denoiser (Union[DiffusersUNet2DWrapper, DiffusersTransformer2DWrapper]):
-            Denoiser to use for the diffusion model. Defaults to None
+        target_key (str):
+            Key for the target image. Defaults to "target_image"
 
-        training_noise_scheduler (EulerDiscreteScheduler):
-            Noise scheduler to use for training. Defaults to None
+        mask_key (Optional[str]):
+            Key for the mask showing the valid pixels. Defaults to None
 
-        sampling_noise_scheduler (EulerDiscreteScheduler):
-            Noise scheduler to use for sampling. Defaults to None
+        latent_loss_type (str):
+            Loss type to use. Defaults to "l2". Choices are "l2", "l1"
 
-        vae (AutoencoderKLDiffusers):
-            VAE to use for the diffusion model. Defaults to None
+        pixel_loss_type (str):
+            Pixel loss type to use. Defaults to "l2". Choices are "l2", "l1", "lpips"
 
-        conditioner (ConditionerWrapper):
-            Conditioner to use for the diffusion model. Defaults to None
+        pixel_loss_max_size (int):
+            Maximum size of the image for pixel loss.
+            The image will be cropped to this size to reduce decoding computation cost. Defaults to 512
+
+        pixel_loss_weight (float):
+            Weight of the pixel loss. Defaults to 0.0
+
+        timestep_sampling (str):
+            Timestep sampling to use. Defaults to "uniform". Choices are "uniform"
+
+        input_key (str):
+            Key for the input. Defaults to "image"
+
+        controlnet_input_key (str):
+            Key for the controlnet conditioning. Defaults to "controlnet_conditioning"
+
+        adapter_input_key (str):
+            Key for the adapter conditioning. Defaults to "adapter_conditioning"
+
+        ucg_keys (Optional[List[str]]):
+            List of keys for which we enforce zero_conditioning during Classifier-free guidance. Defaults to None
+
+        prediction_type (str):
+            Type of prediction to use. Defaults to "epsilon". Choices are "epsilon", "v_prediction", "flow
+
+        logit_mean (Optional[float]):
+            Mean of the logit for the log normal distribution. Defaults to 0.0
+
+        logit_std (Optional[float]):
+            Standard deviation of the logit for the log normal distribution. Defaults to 1.0
+
+        guidance_scale (Optional[float]):
+            The guidance scale. Useful for finetunning guidance distilled diffusion models. Defaults to None
+
+        selected_timesteps (Optional[List[float]]):
+            List of selected timesteps to be sampled from if using `custom_timesteps` timestep sampling. Defaults to None
+
+        prob (Optional[List[float]]):
+            List of probabilities for the selected timesteps if using `custom_timesteps` timestep sampling. Defaults to None
+
+        prompt_embedding_path (Optional[str]):
+            Optional path to a cached prompt embedding (e.g. SD1.5 CLIP output). Overrides the legacy hardcoded path.
     """
 
-    @classmethod
-    def load_from_config(cls, config: LBMConfig):
-        return cls(config=config)
-
-    def __init__(
-        self,
-        config: LBMConfig,
-        denoiser: Union[
-            UNet2DConditionModel,
-            DiffusersUNet2DWrapper,
-            DiffusersUNet2DCondWrapper,
-        ] = None,
-        training_noise_scheduler: FlowMatchEulerDiscreteScheduler = None,
-        sampling_noise_scheduler: FlowMatchEulerDiscreteScheduler = None,
-        vae: AutoencoderKLDiffusers = None,
-        conditioner: ConditionerWrapper = None,
-    ):
-        BaseModel.__init__(self, config)
-
-        self.vae = vae
-        self.denoiser = denoiser
-        self.conditioner = conditioner
-        self.sampling_noise_scheduler = sampling_noise_scheduler
-        self.training_noise_scheduler = training_noise_scheduler
-        self.timestep_sampling = config.timestep_sampling
-        self.latent_loss_type = config.latent_loss_type
-        self.latent_loss_weight = config.latent_loss_weight
-        self.pixel_loss_type = config.pixel_loss_type
-        self.pixel_loss_max_size = config.pixel_loss_max_size
-        self.pixel_loss_weight = config.pixel_loss_weight
-        self.logit_mean = config.logit_mean
-        self.logit_std = config.logit_std
-        self.prob = config.prob
-        self.selected_timesteps = config.selected_timesteps
-        self.source_key = config.source_key
-        self.target_key = config.target_key
-        self.mask_key = config.mask_key
-        self.bridge_noise_sigma = config.bridge_noise_sigma
-
-        self.prompt_path ='prompt_cache/6ab02325b7fc8d17.pt'
-        self.prompt_embedding = torch.load(
-            self.prompt_path,
-            map_location="cpu",
-            weights_only=True,
-        )
-
-        self.num_iterations = nn.Parameter(
-            torch.tensor(0, dtype=torch.float32), requires_grad=False
-        )
-        if self.pixel_loss_type == "lpips" and self.pixel_loss_weight > 0:
-            self.lpips_loss = lpips.LPIPS(net="vgg")
-
-        else:
-            self.lpips_loss = None
-
-    def on_fit_start(self, device: torch.device | None = None, *args, **kwargs):
-        """Called when the training starts"""
-        super().on_fit_start(device=device, *args, **kwargs)
-        if self.vae is not None:
-            self.vae.on_fit_start(device=device, *args, **kwargs)
-        if self.conditioner is not None:
-            self.conditioner.on_fit_start(device=device, *args, **kwargs)
-
-    def forward(self, batch: Dict[str, Any], step=0, batch_idx=0, *args, **kwargs):
-
-        self.num_iterations += 1
-
-        # Get inputs/latents
-        if self.vae is not None:
-            vae_inputs = batch[self.target_key]
-            z = self.vae.encode(vae_inputs)
-            downsampling_factor = self.vae.downsampling_factor
-        else:
-            z = batch[self.target_key]
-            downsampling_factor = 1
-
-        if self.mask_key in batch:
-            valid_mask = batch[self.mask_key].bool()[:, 0, :, :].unsqueeze(1)
-            # Align the mask to the target image resolution. In this dataset the mask
-            # can be at a different pixel size than the target image, which makes the
-            # downsampled latent mask misalign with z and raises
-            # "size of tensor a must match size of tensor b" in latent_loss.
-            _tgt_size = tuple(int(s) for s in batch[self.target_key].shape[-2:])
-            if tuple(valid_mask.shape[-2:]) != _tgt_size:
-                valid_mask = torch.nn.functional.interpolate(
-                    valid_mask.float(), size=_tgt_size, mode="nearest"
-                ).bool()
-            invalid_mask = ~valid_mask
-            valid_mask_for_latent = ~torch.max_pool2d(
-                invalid_mask.float(),
-                downsampling_factor,
-                downsampling_factor,
-            ).bool()
-            valid_mask_for_latent = valid_mask_for_latent.repeat((1, z.shape[1], 1, 1))
-
-        else:
-            valid_mask = torch.ones_like(batch[self.target_key]).bool()
-            valid_mask_for_latent = torch.ones_like(z).bool()
-
-        source_image = batch[self.source_key]
-        source_image = torch.nn.functional.interpolate(
-            source_image,
-            size=batch[self.target_key].shape[-2:],
-            mode="bilinear",
-            align_corners=False,
-        ).to(z.dtype)
-        if self.vae is not None:
-            z_source = self.vae.encode(source_image)
-
-        else:
-            z_source = source_image
-
-        # Get conditionings
-        conditioning = self._get_conditioning(batch, *args, **kwargs)
-
-        # Sample a timestep
-        timestep = self._timestep_sampling(n_samples=z.shape[0], device=z.device)
-        sigmas = None
-
-        # Create interpolant
-        sigmas = self._get_sigmas(
-            self.training_noise_scheduler, timestep, n_dim=4, device=z.device
-        )
-        noisy_sample = (
-            sigmas * z_source
-            + (1.0 - sigmas) * z
-            + self.bridge_noise_sigma
-            * (sigmas * (1.0 - sigmas)) ** 0.5
-            * torch.randn_like(z)
-        )
-
-        for i, t in enumerate(timestep):
-            if t.item() == self.training_noise_scheduler.timesteps[0]:
-                noisy_sample[i] = z_source[i]
-
-        # context_len = 77
-        # text_dim = 768
-        # encoder_hidden_states = torch.randn(
-        #     (z_source.shape[0], context_len, text_dim), 
-        #     dtype=torch.bfloat16, 
-        #     device=self.denoiser.device
-        # )
-
-        # saved_embedding = torch.load(
-        #     self.prompt_path,
-        #     map_location="cpu",
-        #     weights_only=True,
-        # )
-
-        saved_embedding = self.prompt_embedding.to(
-            device=z_source.device,
-            dtype=z_source.dtype,
-        )
-
-        encoder_hidden_states = saved_embedding.expand(
-            z_source.shape[0],
-            -1,
-            -1,
-        )
-
-        # Predict noise level using denoiser
-        prediction = self.denoiser(
-            sample=noisy_sample,
-            timestep=timestep,
-            encoder_hidden_states=encoder_hidden_states,
-            # conditioning=conditioning,
-            *args,
-            **kwargs,
-        ).sample
-
-        target = z_source - z
-        denoised_sample = noisy_sample - prediction * sigmas
-        target_pixels = batch[self.target_key]
-
-        # Compute loss
-        if self.latent_loss_weight > 0:
-            loss = self.latent_loss(prediction, target.detach(), valid_mask_for_latent)
-            latent_recon_loss = loss.mean()
-
-        else:
-            loss = torch.zeros(z.shape[0], device=z.device)
-            latent_recon_loss = torch.zeros_like(loss)
-
-        if self.pixel_loss_weight > 0:
-            denoised_sample = self._predicted_x_0(
-                model_output=prediction,
-                sample=noisy_sample,
-                sigmas=sigmas,
-            )
-            pixel_loss = self.pixel_loss(
-                denoised_sample, target_pixels.detach(), valid_mask
-            )
-            loss += self.pixel_loss_weight * pixel_loss
-
-        else:
-            pixel_loss = torch.zeros_like(latent_recon_loss)
-
-        return {
-            "loss": loss.mean(),
-            "latent_recon_loss": latent_recon_loss,
-            "pixel_recon_loss": pixel_loss.mean(),
-            "predicted_hr": denoised_sample,
-            "noisy_sample": noisy_sample,
-        }
-
-    def latent_loss(self, prediction, model_input, valid_latent_mask):
-        if self.latent_loss_type == "l2":
-            return torch.mean(
-                (
-                    (prediction * valid_latent_mask - model_input * valid_latent_mask)
-                    ** 2
-                ).reshape(model_input.shape[0], -1),
-                1,
-            )
-        elif self.latent_loss_type == "l1":
-            return torch.mean(
-                torch.abs(
-                    prediction * valid_latent_mask - model_input * valid_latent_mask
-                ).reshape(model_input.shape[0], -1),
-                1,
-            )
-        else:
-            raise NotImplementedError(
-                f"Loss type {self.latent_loss_type} not implemented"
-            )
-
-    def pixel_loss(self, prediction, model_input, valid_mask):
-
-        latent_crop = self.pixel_loss_max_size // self.vae.downsampling_factor
-        input_crop = self.pixel_loss_max_size
-
-        crop_h = max((prediction.shape[2] - latent_crop), 0)
-        crop_w = max((prediction.shape[3] - latent_crop), 0)
-
-        input_crop_h = max((model_input.shape[2] - self.pixel_loss_max_size), 0)
-        input_crop_w = max((model_input.shape[3] - self.pixel_loss_max_size), 0)
-
-        # image random cropping
-        if crop_h == 0:
-            offset_h = 0
-        else:
-            offset_h = torch.randint(0, crop_h, (1,)).item()
-
-        if crop_w == 0:
-            offset_w = 0
-        else:
-            offset_w = torch.randint(0, crop_w, (1,)).item()
-        input_offset_h = offset_h * self.vae.downsampling_factor
-        input_offset_w = offset_w * self.vae.downsampling_factor
-
-        prediction = prediction[
-            :,
-            :,
-            crop_h
-            - offset_h : min(crop_h - offset_h + latent_crop, prediction.shape[2]),
-            crop_w
-            - offset_w : min(crop_w - offset_w + latent_crop, prediction.shape[3]),
-        ]
-
-        model_input = model_input[
-            :,
-            :,
-            input_crop_h
-            - input_offset_h : min(
-                input_crop_h - input_offset_h + input_crop, model_input.shape[2]
-            ),
-            input_crop_w
-            - input_offset_w : min(
-                input_crop_w - input_offset_w + input_crop, model_input.shape[3]
-            ),
-        ]
-
-        valid_mask = valid_mask[
-            :,
-            :,
-            input_crop_h
-            - input_offset_h : min(
-                input_crop_h - input_offset_h + input_crop, valid_mask.shape[2]
-            ),
-            input_crop_w
-            - input_offset_w : min(
-                input_crop_w - input_offset_w + input_crop, valid_mask.shape[3]
-            ),
-        ]
-
-        decoded_prediction = self.vae.decode(prediction).clamp(-1, 1)
-
-        if self.pixel_loss_type == "l2":
-            return torch.mean(
-                (
-                    (decoded_prediction * valid_mask - model_input * valid_mask) ** 2
-                ).reshape(model_input.shape[0], -1),
-                1,
-            )
-
-        elif self.pixel_loss_type == "l1":
-            return torch.mean(
-                torch.abs(
-                    decoded_prediction * valid_mask - model_input * valid_mask
-                ).reshape(model_input.shape[0], -1),
-                1,
-            )
-
-        elif self.pixel_loss_type == "lpips":
-            return self.lpips_loss(
-                decoded_prediction * valid_mask, model_input * valid_mask
-            ).mean()
-
-    def _get_conditioning(
-        self,
-        batch: Dict[str, Any],
-        ucg_keys: List[str] = None,
-        set_ucg_rate_zero=False,
-        *args,
-        **kwargs,
-    ):
-        """
-        Get the conditionings
-        """
-        if self.conditioner is not None:
-            return self.conditioner(
-                batch,
-                ucg_keys=ucg_keys,
-                set_ucg_rate_zero=set_ucg_rate_zero,
-                vae=self.vae,
-                *args,
-                **kwargs,
-            )
-        else:
-            return None
-
-    def _timestep_sampling(self, n_samples=1, device="cpu"):
-        if self.timestep_sampling == "uniform":
-            idx = torch.randint(
-                0,
-                self.training_noise_scheduler.config.num_train_timesteps,
-                (n_samples,),
-                device="cpu",
-            )
-            return self.training_noise_scheduler.timesteps[idx].to(device=device)
-
-        elif self.timestep_sampling == "log_normal":
-            u = torch.normal(
-                mean=self.logit_mean,
-                std=self.logit_std,
-                size=(n_samples,),
-                device="cpu",
-            )
-            u = torch.nn.functional.sigmoid(u)
-            indices = (
-                u * self.training_noise_scheduler.config.num_train_timesteps
-            ).long()
-            return self.training_noise_scheduler.timesteps[indices].to(device=device)
-
-        elif self.timestep_sampling == "custom_timesteps":
-            idx = np.random.choice(len(self.selected_timesteps), n_samples, p=self.prob)
-
-            return torch.tensor(
-                self.selected_timesteps, device=device, dtype=torch.long
-            )[idx]
-
-    def _predicted_x_0(
-        self,
-        model_output,
-        sample,
-        sigmas=None,
-    ):
-        """
-        Predict x_0, the orinal denoised sample, using the model output and the timesteps depending on the prediction type.
-        """
-        pred_x_0 = sample - model_output * sigmas
-        return pred_x_0
-
-    def _get_sigmas(
-        self, scheduler, timesteps, n_dim=4, dtype=torch.float32, device="cpu"
-    ):
-        sigmas = scheduler.sigmas.to(device=device, dtype=dtype)
-        schedule_timesteps = scheduler.timesteps.to(device)
-        timesteps = timesteps.to(device)
-        step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
-
-        sigma = sigmas[step_indices].flatten()
-        while len(sigma.shape) < n_dim:
-            sigma = sigma.unsqueeze(-1)
-        return sigma
-
-    @torch.no_grad()
-    def sample(
-        self,
-        z: torch.Tensor,
-        num_steps: int = 20,
-        conditioner_inputs: Optional[Dict[str, Any]] = None,
-        max_samples: Optional[int] = None,
-        verbose: bool = False,
-    ):
-        self.sampling_noise_scheduler.set_timesteps(
-            sigmas=np.linspace(1, 1 / num_steps, num_steps)
-        )
-
-        sample = z
-
-        # Get conditioning
-        conditioning = self._get_conditioning(
-            conditioner_inputs, set_ucg_rate_zero=True, device=z.device
-        )
-
-        # If max_samples parameter is provided, limit the number of samples
-        if max_samples is not None:
-            sample = sample[:max_samples]
-
-        if conditioning:
-            conditioning["cond"] = {
-                k: v[:max_samples] for k, v in conditioning["cond"].items()
-            }
-
-        for i, t in tqdm(
-            enumerate(self.sampling_noise_scheduler.timesteps), disable=not verbose
-        ):
-            if hasattr(self.sampling_noise_scheduler, "scale_model_input"):
-                denoiser_input = self.sampling_noise_scheduler.scale_model_input(
-                    sample, t
-                )
-
-            else:
-                denoiser_input = sample
-
-            # context_len = 77
-            # text_dim = 768
-            # encoder_hidden_states = torch.randn(
-            #     (denoiser_input.shape[0], context_len, text_dim), 
-            #     dtype=torch.bfloat16, 
-            #     device=self.denoiser.device
-            # )
-
-            saved_embedding = self.prompt_embedding.to(
-                device=self.denoiser.device,
-                dtype=denoiser_input.dtype,
-            )
-
-            encoder_hidden_states = saved_embedding.expand(
-                denoiser_input.shape[0],
-                -1,
-                -1,
-            )
-
-            # Predict noise level using denoiser using conditionings
-            pred = self.denoiser(
-                sample=denoiser_input,
-                timestep=t.to(z.device).repeat(denoiser_input.shape[0]),
-
-                encoder_hidden_states=encoder_hidden_states,
-                # conditioning=conditioning,
-            ).sample
-
-            # Make one step on the reverse diffusion process
-            sample = self.sampling_noise_scheduler.step(
-                pred, t, sample, return_dict=False
-            )[0]
-            if i < len(self.sampling_noise_scheduler.timesteps) - 1:
-                timestep = (
-                    self.sampling_noise_scheduler.timesteps[i + 1]
-                    .to(z.device)
-                    .repeat(sample.shape[0])
-                )
-                sigmas = self._get_sigmas(
-                    self.sampling_noise_scheduler, timestep, n_dim=4, device=z.device
-                )
-                sample = sample + self.bridge_noise_sigma * (
-                    sigmas * (1.0 - sigmas)
-                ) ** 0.5 * torch.randn_like(sample)
-                sample = sample.to(z.dtype)
-
-        if self.vae is not None:
-            decoded_sample = self.vae.decode(sample)
-
-        else:
-            decoded_sample = sample
-
-        return decoded_sample
-
-    def log_samples(
-        self,
-        batch: Dict[str, Any],
-        input_shape: Optional[Tuple[int, int, int]] = None,
-        max_samples: Optional[int] = None,
-        num_steps: Union[int, List[int]] = 20,
-    ):
-        if isinstance(num_steps, int):
-            num_steps = [num_steps]
-
-        logs = {}
-
-        N = max_samples if max_samples is not None else len(batch[self.source_key])
-
-        batch = {k: v[:N] for k, v in batch.items()}
-
-        # infer input shape based on VAE configuration if not passed
-        if input_shape is None:
-            if self.vae is not None:
-                # get input pixel size of the vae
-                input_shape = batch[self.target_key].shape[2:]
-                # rescale to latent size
-                input_shape = (
-                    self.vae.latent_channels,
-                    input_shape[0] // self.vae.downsampling_factor,
-                    input_shape[1] // self.vae.downsampling_factor,
-                )
-            else:
-                raise ValueError(
-                    "input_shape must be passed when no VAE is used in the model"
-                )
-
-        for num_step in num_steps:
-            source_image = batch[self.source_key]
-            source_image = torch.nn.functional.interpolate(
-                source_image,
-                size=batch[self.target_key].shape[2:],
-                mode="bilinear",
-                align_corners=False,
-            ).to(dtype=self.dtype)
-            if self.vae is not None:
-                z = self.vae.encode(source_image)
-
-            else:
-                z = source_image
-
-            with torch.autocast(dtype=self.dtype, device_type="cuda"):
-                logs[f"samples_{num_step}_steps"] = self.sample(
-                    z,
-                    num_steps=num_step,
-                    conditioner_inputs=batch,
-                    max_samples=N,
-                )
-
-        return logs
+    source_key: str = "source_image"
+    target_key: str = "target_image"
+    mask_key: Optional[str] = None
+    latent_loss_weight: float = 1.0
+    latent_loss_type: Literal["l2", "l1"] = "l2"
+    pixel_loss_type: Literal["l2", "l1", "lpips"] = "l2"
+    pixel_loss_max_size: int = 512
+    pixel_loss_weight: float = 0.0
+    timestep_sampling: Literal["uniform", "log_normal", "custom_timesteps"] = "uniform"
+    logit_mean: Optional[float] = 0.0
+    logit_std: Optional[float] = 1.0
+    selected_timesteps: Optional[List[float]] = None
+    prob: Optional[List[float]] = None
+    bridge_noise_sigma: float = 0.001
+    prompt_embedding_path: Optional[str] = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.timestep_sampling == "log_normal":
+            assert isinstance(self.logit_mean, float) and isinstance(
+                self.logit_std, float
+            ), "logit_mean and logit_std should be float for log_normal timestep sampling"
+
+        if self.timestep_sampling == "custom_timesteps":
+            assert isinstance(self.selected_timesteps, list) and isinstance(
+                self.prob, list
+            ), "timesteps and prob should be list for custom_timesteps timestep sampling"
+            assert len(self.selected_timesteps) == len(
+                self.prob
+            ), "timesteps and prob should be of same length for custom_timesteps timestep sampling"
+            assert (
+                sum(self.prob) == 1
+            ), "prob should sum to 1 for custom_timesteps timestep sampling"
