@@ -172,9 +172,12 @@ def get_model(
     return model
 
 def get_filter_mappers():
-    image_size = (592, 448)
     filters_mappers = [
-        KeyFilter(KeyFilterConfig(keys=["jpg", "normal_aligned.png", "mask.png"])),
+        KeyFilter(
+            KeyFilterConfig(
+                keys=["jpg", "normal_aligned.png", "mask.png"]
+            )
+        ),
         MapperWrapper(
             [
                 KeyRenameMapper(
@@ -186,48 +189,50 @@ def get_filter_mappers():
                         }
                     )
                 ),
+
+                # image
                 TorchvisionMapper(
                     TorchvisionMapperConfig(
                         key="image",
-                        transforms=["ToTensor", "Resize"],
+                        transforms=["ToTensor"],
                         transforms_kwargs=[
                             {},
-                            {
-                                "size": image_size,
-                                "interpolation": InterpolationMode.NEAREST_EXACT,
-                            },
                         ],
                     )
                 ),
+
+                # normal
                 TorchvisionMapper(
                     TorchvisionMapperConfig(
                         key="normal",
-                        transforms=["ToTensor", "Resize"],
+                        transforms=["ToTensor"],
                         transforms_kwargs=[
                             {},
-                            {
-                                "size": image_size,
-                                "interpolation": InterpolationMode.NEAREST_EXACT,
-                            },
                         ],
                     )
                 ),
+
+                # mask
                 TorchvisionMapper(
                     TorchvisionMapperConfig(
                         key="mask",
-                        transforms=["ToTensor", "Resize", "Normalize"],
+                        transforms=["ToTensor", "Normalize"],
                         transforms_kwargs=[
                             {},
                             {
-                                "size": image_size,
-                                "interpolation": InterpolationMode.NEAREST_EXACT,
+                                "mean": 0.0,
+                                "std": 1.0,
                             },
-                            {"mean": 0.0, "std": 1.0},
                         ],
                     )
                 ),
-                RescaleMapper(RescaleMapperConfig(key="image")),
-                RescaleMapper(RescaleMapperConfig(key="normal")),
+
+                RescaleMapper(
+                    RescaleMapperConfig(key="image")
+                ),
+                RescaleMapper(
+                    RescaleMapperConfig(key="normal")
+                ),
             ],
         ),
     ]
@@ -259,7 +264,7 @@ def get_data_module(
         decoder="pil",
         shuffle_before_split_by_node_buffer_size=20,
         shuffle_before_split_by_workers_buffer_size=20,
-        shuffle_before_filter_mappers_buffer_size=20,
+        shuffle_before_filter_mappers_buffer_size=2000,
         shuffle_after_filter_mappers_buffer_size=20,
         per_worker_batch_size=batch_size,
         num_workers=min(10, len(train_shards_path_or_urls_unbraced)),
@@ -337,6 +342,11 @@ def main(
     max_epochs: int = 100,
     bridge_noise_sigma: float = 0.005,
     save_interval: int = 1000,
+    # NOTE: validation only fires when (batch_idx + 1) % val_check_interval == 0
+    # (pytorch_lightning/loops/training_epoch_loop.py:_should_check_val_fx), so with the
+    # original hardcoded 1000 an epoch shorter than 1000 steps never validates at all.
+    # Exposed as a config knob; default 1000 keeps the previous behaviour byte-for-byte.
+    val_check_interval: int = 5000,
     path_config: str = None,
 ):
 
@@ -347,7 +357,12 @@ def main(
         + f"_{os.environ.get('SLURM_ARRAY_TASK_ID', 0)}"
     )
     dir_path = f"{save_ckpt_path}/logs/{training_signature}"
-    if os.environ.get("SLURM_PROCID", 0) == "0":
+    # NOTE: the default MUST be the string "0". os.environ.get(..., 0) returns int 0 and
+    #  is False, so outside SLURM this whole block was silently skipped:
+    # checkpoints/<run>/logs/ was never created (wandb then reported its dir as "not writable"
+    # and fell back to the system temp dir), and config.yaml was never copied.
+    # The LOCAL_RANK guard keeps it to one process when Lightning spawns the DDP ranks.
+    if os.environ.get("SLURM_PROCID", "0") == "0" and os.environ.get("LOCAL_RANK", "0") == "0":
         os.makedirs(dir_path, exist_ok=True)
         if path_config is not None:
             shutil.copy(path_config, f"{save_ckpt_path}/config.yaml")
@@ -389,7 +404,7 @@ def main(
         learning_rate=learning_rate,
         lr_scheduler_name=learning_rate_scheduler,
         lr_scheduler_kwargs=learning_rate_scheduler_kwargs,
-        log_keys=["image", "notmal", "mask"],
+        log_keys=["image", "normal", "mask"],
         trainable_params=train_parameters,
         optimizer_name=optimizer,
         optimizer_kwargs=optimizer_kwargs,
@@ -484,8 +499,8 @@ def main(
         ],
         num_sanity_val_steps=0,
         precision="bf16-mixed",
-        limit_val_batches=2,
-        val_check_interval=1000,
+        limit_val_batches=5,
+        val_check_interval=val_check_interval,
         max_epochs=max_epochs,
     )
     for n, p in pipeline.model.named_parameters():

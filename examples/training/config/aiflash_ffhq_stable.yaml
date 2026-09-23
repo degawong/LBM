@@ -4,14 +4,14 @@ wandb_project: lbm-aiflash
 train_shards:
   - /home/datas/nas-hz1/LBM/dataset/aiflash_ffhq_padding_0512x0512.tar
 validation_shards:
-  - /home/datas/nas-hz1/LBM/dataset/aiflash_ffhq_padding_0512x0512_100.tar
+  - /home/datas/nas-hz1/LBM/dataset/aiflash_ffhq_padding_0512x0512_10.tar
 
 vae_backbone_signature: stable-diffusion-v1-5/stable-diffusion-v1-5
 unet_backbone_signature: stable-diffusion-v1-5/stable-diffusion-v1-5
 # Must contain a scheduler compatible with FlowMatchEulerDiscreteScheduler.
-scheduler_backbone_signature: stable-diffusion-v1-5/stable-diffusion-v1-5
+scheduler_backbone_signature: stabilityai/stable-diffusion-xl-base-1.0
 # Generate this file with the SD1.5 text encoder using exactly: flash lighting.
-prompt_embedding_path: /home/datas/nas-hz1/LBM/prompt_cache/flash_lighting.pt
+prompt_embedding_path: /home/arc-wgq2719/work/lbm/prompt_cache/flash_lighting.pt
 
 # Dataset keys intentionally remain the original image/normal/mask contract.
 source_key: image
@@ -40,4 +40,5 @@ log_interval: 500
 resume_from_checkpoint: false
 max_epochs: 50
 save_interval: 5000
+val_check_interval: 5000
 save_ckpt_path: ./checkpoints/checkpoints-aiflash-ffhq-padding-0512x0512-stable

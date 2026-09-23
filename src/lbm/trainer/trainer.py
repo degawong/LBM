@@ -170,7 +170,16 @@ class TrainingPipeline(pl.LightningModule):
         }
 
     def validation_step(self, val_batch: Dict[str, Any], val_idx: int) -> dict:
-        loss = self.model(val_batch, device=self.device)["loss"]
+        # NOTE: do NOT forward 'device' here. LBMModel.forward(batch, step, batch_idx, *args, **kwargs)
+        # splats unknown kwargs straight into self.denoiser(...), and UNet2DConditionModel.forward()
+        # does not accept a 'device' argument -> TypeError at the first validation pass.
+        # Device placement is handled by Lightning, so call the model exactly like training_step does.
+        loss = self.model(val_batch)["loss"]
+
+        # Mirror training_step's logging: without this the validation loop produces no
+        # output at all, which makes a real validation pass indistinguishable from a hang.
+        if self.trainer.is_global_zero:
+            logging.info(f"val_loss: {loss}")
 
         metrics = self.model.compute_metrics(val_batch)
 
