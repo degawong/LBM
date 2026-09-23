@@ -117,6 +117,15 @@ class LBMModel(BaseModel):
 
         if self.mask_key in batch:
             valid_mask = batch[self.mask_key].bool()[:, 0, :, :].unsqueeze(1)
+            # Align the mask to the target image resolution. In this dataset the mask
+            # can be at a different pixel size than the target image, which makes the
+            # downsampled latent mask misalign with z and raises
+            # "size of tensor a must match size of tensor b" in latent_loss.
+            _tgt_size = tuple(int(s) for s in batch[self.target_key].shape[-2:])
+            if tuple(valid_mask.shape[-2:]) != _tgt_size:
+                valid_mask = torch.nn.functional.interpolate(
+                    valid_mask.float(), size=_tgt_size, mode="nearest"
+                ).bool()
             invalid_mask = ~valid_mask
             valid_mask_for_latent = ~torch.max_pool2d(
                 invalid_mask.float(),

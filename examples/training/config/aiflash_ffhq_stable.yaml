@@ -11,7 +11,7 @@ unet_backbone_signature: stable-diffusion-v1-5/stable-diffusion-v1-5
 # Must contain a scheduler compatible with FlowMatchEulerDiscreteScheduler.
 scheduler_backbone_signature: stable-diffusion-v1-5/stable-diffusion-v1-5
 # Generate this file with the SD1.5 text encoder using exactly: flash lighting.
-prompt_embedding_path: /home/datas/nas-hz1/LBM/prompt_cache/flash_lighting.pt
+prompt_embedding_path: /home/arc-wgq2719/work/lbm/prompt_cache/flash_lighting.pt
 
 # Dataset keys intentionally remain the original image/normal/mask contract.
 source_key: image
