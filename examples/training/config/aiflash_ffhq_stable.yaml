@@ -1,5 +1,4 @@
 # Stable SD1.5/FFHQ diagnostic configuration.
-# Run with examples/training/aiflash_stable.py.
 wandb_project: lbm-aiflash
 
 train_shards:
@@ -9,11 +8,12 @@ validation_shards:
 
 vae_backbone_signature: stable-diffusion-v1-5/stable-diffusion-v1-5
 unet_backbone_signature: stable-diffusion-v1-5/stable-diffusion-v1-5
-# This must point to a scheduler compatible with the LBM FlowMatch objective.
-# Override this path if the local SD1.5 model uses another scheduler implementation.
+# Must contain a scheduler compatible with FlowMatchEulerDiscreteScheduler.
 scheduler_backbone_signature: stable-diffusion-v1-5/stable-diffusion-v1-5
+# Generate this file with the SD1.5 text encoder using exactly: flash lighting.
 prompt_embedding_path: /home/datas/nas-hz1/LBM/prompt_cache/flash_lighting.pt
 
+# Dataset keys intentionally remain the original image/normal/mask contract.
 source_key: image
 target_key: normal
 mask_key: mask
@@ -24,7 +24,7 @@ optimizer: AdamW
 optimizer_kwargs:
   weight_decay: 0.01
 
-# Start with latent loss only. Re-enable LPIPS after latent loss is stable.
+# First establish a stable latent-only baseline.
 latent_loss_type: l2
 latent_loss_weight: 1.0
 pixel_loss_type: lpips
@@ -40,5 +40,4 @@ log_interval: 500
 resume_from_checkpoint: false
 max_epochs: 50
 save_interval: 5000
-val_check_interval: 1000
 save_ckpt_path: ./checkpoints/checkpoints-aiflash-ffhq-padding-0512x0512-stable
